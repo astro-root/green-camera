@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Green AR Quiz Prototype</title>
+<style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #0b0d0f;
+  color: #e8ecef;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+  overscroll-behavior: none;
+}
+#app {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+#stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+}
+video { display: none; }
+canvas#output {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+  background: #111;
+}
+#hint {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #9aa4ad;
+  pointer-events: none;
+  text-align: center;
+}
+#controls {
+  flex-shrink: 0;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: #14171a;
+  border-top: 1px solid #23272b;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+button, .fileBtn {
+  appearance: none;
+  border: none;
+  border-radius: 10px;
+  padding: 11px 14px;
+  font-size: 15px;
+  font-weight: 600;
+  background: #2f6feb;
+  color: #fff;
+  flex: 1;
+  text-align: center;
+}
+button:active, .fileBtn:active { background: #2559bd; }
+button:disabled { background: #2b2f34; color: #6b7278; }
+.fileBtn { background: #2b2f34; position: relative; overflow: hidden; }
+.fileBtn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+}
+#status {
+  font-size: 12px;
+  color: #7d868e;
+  text-align: center;
+}
+details#tuning {
+  background: #1b1f23;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+summary {
+  font-size: 13px;
+  color: #c6cdd3;
+  padding: 4px 0;
+}
+.slider {
+  display: grid;
+  grid-template-columns: 90px 1fr 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+  color: #9aa4ad;
+}
+.slider input[type=range] {
+  width: 100%;
+}
+.slider span { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="output"></canvas>
+    <div id="hint">「カメラ開始」を押してから、緑色の板をカメラに映してください。</div>
+  </div>
+  <div id="controls">
+    <div class="row">
+      <button id="startBtn">カメラ開始</button>
+      <label class="fileBtn">クイズ画像を選択
+        <input type="file" id="quizInput" accept="image/*">
+      </label>
+    </div>
+    <div id="status">カメラ未起動</div>
+    <details id="tuning">
+      <summary>緑色検出の調整</summary>
+      <div class="slider">
+        <label for="hueCenter">色相中心</label>
+        <input type="range" id="hueCenter" min="0" max="360" value="120">
+        <span id="hueCenterVal">120</span>
+      </div>
+      <div class="slider">
+        <label for="hueTol">色相許容幅</label>
+        <input type="range" id="hueTol" min="5" max="90" value="35">
+        <span id="hueTolVal">35</span>
+      </div>
+      <div class="slider">
+        <label for="satMin">彩度下限</label>
+        <input type="range" id="satMin" min="0" max="100" value="25">
+        <span id="satMinVal">0.25</span>
+      </div>
+      <div class="slider">
+        <label for="valMin">明度下限</label>
+        <input type="range" id="valMin" min="0" max="100" value="20">
+        <span id="valMinVal">0.20</span>
+      </div>
+    </details>
+  </div>
+</div>
+<script>
+const video = document.getElementById('video');
+const output = document.getElementById('output');
+const octx = output.getContext('2d', { willReadFrequently: true });
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+const quizInput = document.getElementById('quizInput');
+
+const hueCenterInput = document.getElementById('hueCenter');
+const hueTolInput = document.getElementById('hueTol');
+const satMinInput = document.getElementById('satMin');
+const valMinInput = document.getElementById('valMin');
+const hueCenterVal = document.getElementById('hueCenterVal');
+const hueTolVal = document.getElementById('hueTolVal');
+const satMinVal = document.getElementById('satMinVal');
+const valMinVal = document.getElementById('valMinVal');
+
+hueCenterInput.addEventListener('input', () => hueCenterVal.textContent = hueCenterInput.value);
+hueTolInput.addEventListener('input', () => hueTolVal.textContent = hueTolInput.value);
+satMinInput.addEventListener('input', () => satMinVal.textContent = (satMinInput.value / 100).toFixed(2));
+valMinInput.addEventListener('input', () => valMinVal.textContent = (valMinInput.value / 100).toFixed(2));
+
+const vcanvas = document.createElement('canvas');
+const vctx = vcanvas.getContext('2d', { willReadFrequently: true });
+const qcanvas = document.createElement('canvas');
+const qctx = qcanvas.getContext('2d', { willReadFrequently: true });
+
+const PROC_WIDTH = 480;
+let procW = PROC_WIDTH;
+let procH = 0;
+let procReady = false;
+let videoReady = false;
+
+let quizImg = null;
+let quizImageData = null;
+
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  return [h, s, v];
+}
+
+function drawQuizToCanvas() {
+  if (!quizImg || !procReady) return;
+  qcanvas.width = procW;
+  qcanvas.height = procH;
+  const iw = quizImg.naturalWidth, ih = quizImg.naturalHeight;
+  const canvasRatio = procW / procH;
+  const imgRatio = iw / ih;
+  let sx, sy, sw, sh;
+  if (imgRatio > canvasRatio) {
+    sh = ih;
+    sw = ih * canvasRatio;
+    sx = (iw - sw) / 2;
+    sy = 0;
+  } else {
+    sw = iw;
+    sh = iw / canvasRatio;
+    sx = 0;
+    sy = (ih - sh) / 2;
+  }
+  qctx.clearRect(0, 0, procW, procH);
+  qctx.drawImage(quizImg, sx, sy, sw, sh, 0, 0, procW, procH);
+  quizImageData = qctx.getImageData(0, 0, procW, procH);
+}
+
+quizInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    quizImg = img;
+    drawQuizToCanvas();
+    URL.revokeObjectURL(url);
+    statusEl.textContent = 'クイズ画像を読み込みました';
+  };
+  img.src = url;
+});
+
+async function startCamera() {
+  startBtn.disabled = true;
+  statusEl.textContent = 'カメラを起動しています…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    video.addEventListener('loadedmetadata', onVideoReady, { once: true });
+    if (video.videoWidth) onVideoReady();
+  } catch (err) {
+    statusEl.textContent = 'カメラの起動に失敗しました: ' + err.message;
+    startBtn.disabled = false;
+  }
+}
+
+function onVideoReady() {
+  procW = PROC_WIDTH;
+  procH = Math.round(procW * video.videoHeight / video.videoWidth);
+  vcanvas.width = procW;
+  vcanvas.height = procH;
+  output.width = procW;
+  output.height = procH;
+  procReady = true;
+  videoReady = true;
+  statusEl.textContent = 'カメラ動作中';
+  drawQuizToCanvas();
+  requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener('click', startCamera);
+
+function loop() {
+  if (videoReady) {
+    vctx.drawImage(video, 0, 0, procW, procH);
+    const frame = vctx.getImageData(0, 0, procW, procH);
+    const vd = frame.data;
+    const out = octx.createImageData(procW, procH);
+    const od = out.data;
+    const qd = quizImageData ? quizImageData.data : null;
+
+    const hueCenter = Number(hueCenterInput.value);
+    const hueTol = Number(hueTolInput.value);
+    const satMin = Number(satMinInput.value) / 100;
+    const valMin = Number(valMinInput.value) / 100;
+
+    for (let i = 0; i < vd.length; i += 4) {
+      const r = vd[i], g = vd[i + 1], b = vd[i + 2];
+      const hsv = rgbToHsv(r, g, b);
+      let diff = Math.abs(hsv[0] - hueCenter);
+      if (diff > 180) diff = 360 - diff;
+      const isGreen = diff <= hueTol && hsv[1] >= satMin && hsv[2] >= valMin;
+
+      if (isGreen && qd) {
+        od[i] = qd[i];
+        od[i + 1] = qd[i + 1];
+        od[i + 2] = qd[i + 2];
+        od[i + 3] = 255;
+      } else {
+        od[i] = r;
+        od[i + 1] = g;
+        od[i + 2] = b;
+        od[i + 3] = 255;
+      }
+    }
+    octx.putImageData(out, 0, 0);
+  }
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
